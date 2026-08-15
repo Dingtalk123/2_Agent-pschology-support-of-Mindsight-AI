@@ -1,10 +1,20 @@
 import uuid
 
-import requests
 import streamlit as st
 
+from app.graph import run_mindsight
+from app.database import (
+    init_db,
+    get_recent_context,
+    save_conversation,
+)
 
-API_URL = "http://127.0.0.1:8000/chat"
+
+# -------------------------
+# Initialize database
+# -------------------------
+
+init_db()
 
 
 # -------------------------
@@ -146,22 +156,16 @@ if prompt:
     )
 
 
-    # Immediately display user message
+    # Display user message
     with st.chat_message("user"):
 
         st.markdown(prompt)
 
 
-    payload = {
-        "session_id": st.session_state.session_id,
-        "message": prompt
-    }
+    # -------------------------
+    # Run MindSight directly
+    # -------------------------
 
-
-    data = None
-
-
-    # Display assistant container
     with st.chat_message("assistant"):
 
         with st.spinner(
@@ -170,28 +174,82 @@ if prompt:
 
             try:
 
-                response = requests.post(
-                    API_URL,
-                    json=payload,
-                    timeout=60
+                # 1. Read previous conversation
+                conversation_context = (
+                    get_recent_context(
+                        st.session_state.session_id
+                    )
                 )
 
-                response.raise_for_status()
+                # 2. Run LangGraph directly
+                final_state = run_mindsight(
+                    session_id=(
+                        st.session_state.session_id
+                    ),
+                    user_input=prompt,
+                    conversation_context=(
+                        conversation_context
+                        or ""
+                    )
+                )
 
-                data = response.json()
+                # 3. Get final response
+                answer = final_state[
+                    "draft_response"
+                ]
 
-                answer = data["response"]
+                # 4. Save current conversation
+                save_conversation(
+                    session_id=(
+                        st.session_state.session_id
+                    ),
+                    user_input=prompt,
+                    final_response=answer,
+                    decision=final_state[
+                        "decision"
+                    ],
+                    risk_level=final_state[
+                        "risk_level"
+                    ],
+                    reason=final_state[
+                        "reason"
+                    ],
+                    rewrite_count=final_state[
+                        "rewrite_count"
+                    ]
+                )
 
+                # 5. Save Supervisor information
+                st.session_state.last_supervision = {
+                    "decision": final_state[
+                        "decision"
+                    ],
+                    "risk_level": final_state[
+                        "risk_level"
+                    ],
+                    "reason": final_state[
+                        "reason"
+                    ],
+                    "rewrite_count": final_state[
+                        "rewrite_count"
+                    ]
+                }
 
-            except requests.RequestException as e:
+            except Exception as e:
+
+                print(
+                    "Streamlit chat error:",
+                    e
+                )
 
                 answer = (
-                    "MindSight could not connect "
-                    "to the backend service."
+                    "MindSight could not process "
+                    "the request. Please try again."
                 )
 
                 st.error(
-                    f"Backend request failed: {e}"
+                    "An error occurred while "
+                    "processing the request."
                 )
 
 
@@ -205,17 +263,6 @@ if prompt:
             "content": answer
         }
     )
-
-
-    # Save Supervisor information
-    if data:
-
-        st.session_state.last_supervision = {
-            "decision": data["decision"],
-            "risk_level": data["risk_level"],
-            "reason": data["reason"],
-            "rewrite_count": data["rewrite_count"]
-        }
 
 
     st.rerun()
